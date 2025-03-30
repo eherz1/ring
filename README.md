@@ -119,19 +119,19 @@ You should now be able to run your game and see the FPS displayed.
 
 ### Entities
 
-In ring, in the traditional way, entities are only ints. When you create an
+In ring, in the traditional ECS way, entities are only ints. When you create an
 entity you get an int back, and when you want to do something with that entity,
 you call a method of `World` and provide the int as the entity's id.
 
 ```lua
 local fighter = world:createEntity()
 
-fighter:addComponent("health", {
+world:addComponent(fighter, "health", {
   hp = 110,
   mp = 100
 })
 
-local fighterHealth = fighter:getComponent("health")
+local fighterHealth = world:getComponent(fighter, "health")
 fighterHealth.hp = fighterHealth.hp - 10
 ```
 
