@@ -145,8 +145,8 @@ In order to make working with entities easier, the `EntitySystem` is provided.
 -- If an entity has a health component and it's hp falls below zero, then
 -- add a 'dead' component.
 local DeathSystem = world:createEntitySystem({
-  match = function()
-    return self.world:hasComponent("health")
+  match = function(entityId)
+    return self.world:hasComponent(entityId, "health")
   end,
 
   updateEntity = function(entityId, dt)
@@ -164,8 +164,8 @@ local DeathSystem = world:createEntitySystem({
 -- If an entity has a 'dead' component, execute its optional cleanup and
 -- remove it from the world.
 local ReaperSystem = world:createEntitySystem({
-  match = function()
-    return self.world:hasComponent("dead")
+  match = function(entityId)
+    return self.world:hasComponent(entityId, "dead")
   end,
 
   updateEntity = function(entityId)
