@@ -162,7 +162,7 @@ ring.newEntitySystem = function(system)
     self.entities[entityId] = nil
   end
 
-  inst.updateEntity = system.updateEntity or function(entityId)
+  inst.updateEntity = system.updateEntity or function(entityId, dt)
     error("EntitySystem.updateEntity must be implemented")
   end
 
