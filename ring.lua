@@ -100,7 +100,7 @@ end
 -- Create a new EntitySystem. EntitySystem performs iterative processing on a set of entity ids.
 -- @param system.initialize Optional function of form () => void which will be called when the system is initialized.
 -- @param system.destroy Optional function of form () => void which will be called when the system is destroyed.
--- @param system.match Function of form (entityId) => boolean which returns true if this system processes the entity.
+-- @param system.matchEntity Function of form (entityId) => boolean which returns true if this system processes the entity.
 -- @param system.update Optional function of form (delta) => void to compute pre process updates.
 -- @param system.process Optional function of form () => void to do frame processing.
 -- @param system.updateEntity Required function of form (entityId, delta) => void to compute pre process updates on entityId.
@@ -116,7 +116,7 @@ ring.newEntitySystem = function(system)
 
   inst.initialize = function(self)
     for _, entityId in pairs(self.world.entities) do
-      self.entities[entityId] = self:match(entityId)
+      self.entities[entityId] = self:matchEntity(entityId)
     end
   
     self.world:addListener("componentAdded", self)
@@ -140,20 +140,20 @@ ring.newEntitySystem = function(system)
     end
   end
 
-  inst.match = system.match or function(self, entityId)
-    error("EntitySystem.match must be implemented")
+  inst.matchEntity = system.matchEntity or function(self, entityId)
+    error("EntitySystem.matchEntity must be implemented")
   end
 
   inst.onComponentAdded = function(self, entityId, componentName)
-    self.entities[entityId] = self:match(entityId)
+    self.entities[entityId] = self:matchEntity(entityId) or nil
   end
   
   inst.onComponentRemoved = function(self, entityId, componentName)
-    self.entities[entityId] = self:match(entityId)
+    self.entities[entityId] = self:matchEntity(entityId) or nil
   end
   
   inst.onEntityCreated = function(self, entityId)
-    if self:match(entityId) then
+    if self:matchEntity(entityId) then
       self.entities[entityId] = true
     end
   end
@@ -162,7 +162,7 @@ ring.newEntitySystem = function(system)
     self.entities[entityId] = nil
   end
 
-  inst.updateEntity = system.updateEntity or function(entityId, dt)
+  inst.updateEntity = system.updateEntity or function(self, entityId, dt)
     error("EntitySystem.updateEntity must be implemented")
   end
 
@@ -209,14 +209,14 @@ ring.newWorld = function()
     entityDestroyed = {}
   }
 
-  local broadcastComponentAdded = function(world, entityId, componentName)
-    for _, listener in ipairs(world.listeners.componentAdded) do
+  local broadcastComponentAdded = function(self, entityId, componentName)
+    for _, listener in ipairs(self.listeners.componentAdded) do
       listener:onComponentAdded(entityId, componentName)
     end
   end
 
-  local broadcastComponentRemoved = function(world, entityId, componentName)
-    for _, listener in ipairs(world.listeners.componentAdded) do
+  local broadcastComponentRemoved = function(self, entityId, componentName)
+    for _, listener in ipairs(self.listeners.componentAdded) do
       listener:onComponentRemoved(entityId, componentName)
     end
   end
@@ -229,16 +229,25 @@ ring.newWorld = function()
   -- @param componentName The name of the component.
   -- @param defaults Optional table of values to initialize the component with.
   inst.addComponent = function(self, entityId, componentName, defaults)
-    self.components[componentName][entityId] = defaults or true
-    broadcastComponentAdded(entityId, componentName)
+    local component = self.components[componentName]
+    if not component then
+      component = {}
+      self.components[componentName] = component
+    end
+    component[entityId] = defaults or true
+    broadcastComponentAdded(self, entityId, componentName)
   end
 
   -- Remove a component from an entity.
   -- @param entityId The entityId of the entity to remove the component from.
   -- @param componentName The name of the component to remove.
   inst.removeComponent = function(self, entityId, componentName)
-    self.components[componentName][entityId] = nil
-    broadcastComponentRemoved(entityId, componentName)
+    local component = self.components[componentName]
+    if not component then
+      return
+    end
+    components[entityId] = nil
+    broadcastComponentRemoved(self, entityId, componentName)
   end
 
   -- Get a component from an entity.
@@ -296,6 +305,7 @@ ring.newWorld = function()
       end
     end
     broadcastEntityCreated(self, entityId)
+    return entityId
   end
 
   -- Destroy an entity in this world. Broadcasts the event "entityDestroyed" on destruction.
@@ -309,8 +319,8 @@ ring.newWorld = function()
   -- @param system The system to add to this world. Create a system using ring.new*System() functions.
   inst.addSystem = function(self, system)
     system.world = self
-    system:initialize()
     table.insert(self.systems, system)
+    system:initialize()
   end
 
   -- Remove a system from this world. Removes by reference check, so you must
@@ -326,14 +336,17 @@ ring.newWorld = function()
     end
   end
 
-  -- inst.getSystem = function(self, system)
-  --   for _, s in ipairs(self.systems) do
-  --     if s == system then
-  --       return s
-  --     end
-  --   end
-  --   return nil
-  -- end
+  -- Get a system from this world. Finds by reference check, so you must
+  -- have a reference to the system if you want to get it.
+  -- @param system The system instance
+  inst.getSystem = function(self, system)
+    for _, s in ipairs(self.systems) do
+      if s == system then
+        return s
+      end
+    end
+    return nil
+  end
 
   -- Add a listener on this world. A listener may listen to the following events:
   -- - componentAdded, with callback of form onComponentAdded(entityId, componentName) => void, which is called when a component is added to an entity.

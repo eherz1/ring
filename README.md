@@ -66,6 +66,81 @@ local world = ring.newWorld()
 
 Creating a world in itself is not very useful unless you add some systems.
 
+### A note about syntax
+
+LUA is a bit limited in its support for OOP, so we follow a compositional
+pattern. Basically how it works is that a constructor function such as
+ring.newSystem accepts a single argument, table `t`. ring.newSystem creates a
+new table, `u`, and assigns all properties of `t` onto `u`. It then _decorates_
+`u` with additional properties.
+
+
+Sometimes, this means that a key of table `t`
+is overwritten on `u`, so be careful to avoid using the same keys as ring
+does internally. Most of the time, it means that optional functions will
+be given stub implementations if they are not present. In some cases, it
+means that `t`'s implementation of a function will be replaced with another,
+which _also_ invokes `t`'s implementation.
+
+This pattern is lightweight, fits LUA well,
+and in general doesn't cause too many issues, and it allows us to avoid
+having to deal with LUA prototypes. Although object constructors have
+to do more work to copy properties of the origin table than when assigning
+a prototype, once a system is constructed this way, function invocations
+require no call to the __index metamethod.
+
+There are two ways of defining a system:
+
+#### Table syntax
+
+Table syntax is the default syntax - just because that's what I prefer -
+although it requires that you explicitly declare 'self' as a parameter to
+your functions, or else LUA won't support calling functions on the table
+using the colon (:) operator. Also, you must use comma (,) after your
+function declarations, because you're declaring table properties.
+
+```lua
+local MySystem = ring.newSystem({
+  interestingVariable = 5,
+
+  update = function(self, dt)
+    self.interestingVariable = self.interestingVariable + self.interestingVariable / 2
+  end,
+
+  process = function(self)
+    -- Do great things
+  end
+})
+```
+
+Notice that we haven't declared initialize or destroy functions. It's not
+that our system won't have them - it will - but their implementations will
+be set to the default implementation for ring.newSystem (no-op) because they
+are optional.
+
+#### Class syntax
+
+Class syntax uses the colon (:) operator to declare the system. You can then
+pass the completed table to ring.newSystem.
+
+```lua
+local _MySystem = {}
+
+_MySystem.interestingVariable = 5
+
+function _MySystem:update(dt)
+  self.interestingVariable = self.interestingVariable + self.interestingVariable / 2
+end
+
+function _MySystem:process()
+  -- Do great things
+end
+
+local MySystem = ring.newSystem(_MySystem)
+```
+
+It's a little bit cleaner, but lacks some readability, in my opinion.
+
 ### Creating a new base system
 
 The first type of system is the base system. Base systems are very simple, and
@@ -75,13 +150,13 @@ FPS, implemented using love's `graphics.print` function.
 
 ```lua
 local FpsSystem = ring:newSystem({
-  initialize = function()
+  initialize = function(self)
     self.frames = 0
     self.timer = 0
     self.fps = 0
   end,
 
-  update = function(dt)
+  update = function(self, dt)
     self.timer = self.timer + dt
     self.frames = self.frames + 1
     if self.timer >= 1 then
@@ -91,7 +166,7 @@ local FpsSystem = ring:newSystem({
     end
   end,
 
-  process = function()
+  process = function(self)
     love.graphics.print("fps:" .. self.fps)
   end
 })
@@ -145,18 +220,18 @@ In order to make working with entities easier, the `EntitySystem` is provided.
 -- If an entity has a health component and it's hp falls below zero, then
 -- add a 'dead' component.
 local DeathSystem = world:createEntitySystem({
-  match = function(entityId)
+  matchEntity = function(self, entityId)
     return self.world:hasComponent(entityId, "health")
   end,
 
-  updateEntity = function(entityId, dt)
+  updateEntity = function(self, entityId, dt)
     local health = self.world:getComponent(entityId, "health")
     if health.hp <= 0 then
       self.world:addComponent(entityId, "dead")
     end
   end,
 
-  processEntity = function(entityId)
+  processEntity = function(self, entityId)
     -- noop
   end
 })
@@ -164,11 +239,11 @@ local DeathSystem = world:createEntitySystem({
 -- If an entity has a 'dead' component, execute its optional cleanup and
 -- remove it from the world.
 local ReaperSystem = world:createEntitySystem({
-  match = function(entityId)
+  matchEntity = function(self, entityId)
     return self.world:hasComponent(entityId, "dead")
   end,
 
-  updateEntity = function(entityId)
+  updateEntity = function(self, entityId)
     local cleanup = self.world:hasComponent(entityId, "cleanup")
     if cleanup then
       cleanup(entityId)
@@ -192,7 +267,7 @@ that purpose, you can use `EventSystem`.
 -- of its children a parent component which refers to the entityId
 -- of the parent.
 local CompositeSystem = ring.newEventSystem({
-  onEntityCreated = function(entityId)
+  onEntityCreated = function(self, entityId)
     local composite = self.world:getComponent(entityId, "composite")
     if composite then
       for _, child in ipairs(composite.children) do
