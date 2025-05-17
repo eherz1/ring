@@ -246,7 +246,7 @@ ring.newWorld = function()
     if not component then
       return
     end
-    components[entityId] = nil
+    component[entityId] = nil
     broadcastComponentRemoved(self, entityId, componentName)
   end
 
