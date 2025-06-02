@@ -1,274 +1,723 @@
+--- An entity component system implementation (ECS) for lua.
+-- @module ring
 local ring = {}
 
--- Create a new System. System is a basic system that calls update and process
--- methods in sequence every tick.
--- @param system.initialize Optional function of form () => void which will be called when the system is added to a world.
--- @param system.destroy Optional function of form () => void which will be called when the system is removed from a world.
--- @param system.update Required function of form (delta) => void to compute updates before frame processing.
--- @param system.process Required function of form () => void to do frame processing.
-ring.newSystem = function(system)
-  local inst = {}
+ring.COMPONENT_PREFIX = "@"
+ring.ENTITY_PREFIX = "#"
+ring.ADD_SUFFIX = "+"
+ring.SUBTRACT_SUFFIX = "-"
+ring.CHANGE_SUFFIX = "~"
 
-  for k, v in pairs(system) do
-    inst[k] = v
+-- Credits to http://lua-users.org/lists/lua-l/2006-12/msg00414.html
+ring.stringSplit = function(s, pat)
+  local st, g = 1, s:gmatch("()(" .. pat .. ")")
+  local function getter(self, segs, seps, sep, cap1, ...)
+    st = sep and seps + #sep
+    return s:sub(segs, (seps or 0) - 1), cap1 or sep, ...
   end
-
-  inst.initialize = system.initialize or function(self) end
-
-  inst.destroy = system.destroy or function(self) end
-
-  inst.update = system.update or function(self, dt)
-    error("System.update must be implemented")
+  local function splitter(self)
+    if st then return getter(s, st, g()) end
   end
-
-  inst.process = system.process or function(self)
-    error("System.process must be implemented")
-  end
-
-  return inst
+  return splitter, s
 end
 
--- Create a new EventSystem. EventSystem is a system that is primarily
--- interested in responding to events that occur on the world to which the
--- system belongs. It may implement per-tick update / process operations, but
--- those methods provide a default no-op implementation and are considered
--- optional.
--- @param system.initialize Optional function of form () => void which will be called when the system is initialized.
--- @param system.destroy Optional function of form () => void which will be called when the system is destroyed.
--- @param system.onEntityCreated Optional function of form (entityId) => void.
--- @param system.onEntityDestroyed Optional function of form (entityId) => void.
--- @param system.onComponentAdded Optional function of form (entityId, componentName) => void.
--- @param system.onComponentRemoved Optional function of form (entityId, componentName) => void.
-ring.newEventSystem = function(system)
-  local inst = {}
-
-  for k, v in pairs(system) do
-    inst[k] = v
-  end
-
-  inst.initialize = function(self)
-    if system.onEntityCreated then
-      self.world:addListener("entityCreated", self)
-    end
-
-    if system.onEntityDestroyed then
-      self.world:addListener("entityDestroyed", self)
-    end
-
-    if system.onComponentAdded then
-      self.world:addListener("componentAdded", self)
-    end
-
-    if system.onComponentRemoved then
-      self.world:addListener("componentRemoved", self)
-    end
-
-    if system.initialize then
-      system.initialize(self)
-    end
-  end
-
-  inst.destroy = function(self)
-    if system.onEntityCreated then
-      self.world:removeListener(self)
-    end
-
-    if system.onEntityDestroyed then
-      self.world:addListener(self)
-    end
-
-    if system.onComponentAdded then
-      self.world:addListener(self)
-    end
-
-    if system.onComponentRemoved then
-      self.world:addListener(self)
-    end
-
-    if system.destroy then
-      system.destroy()
-    end
-  end
-
-  inst.update = system.update or function(self, dt) end
-
-  inst.process = system.process or function(self) end
-
-  return inst
+--- Create a new `ring.Entity` table.
+-- @tfield string name The name of the entity.
+ring.newEntity = function(name, components)
+  return { name = name, components = components }
 end
 
--- Create a new EntitySystem. EntitySystem performs iterative processing on a set of entity ids.
--- @param system.initialize Optional function of form () => void which will be called when the system is initialized.
--- @param system.destroy Optional function of form () => void which will be called when the system is destroyed.
--- @param system.matchEntity Function of form (entityId) => boolean which returns true if this system processes the entity.
--- @param system.update Optional function of form (delta) => void to compute pre process updates.
--- @param system.process Optional function of form () => void to do frame processing.
--- @param system.updateEntity Required function of form (entityId, delta) => void to compute pre process updates on entityId.
--- @param system.processEntity Required function of form (entityId) => void to do frame processing on entityId.
-ring.newEntitySystem = function(system)
-  local inst = {}
+--- A definition of a `ring.System`.
+-- @table SystemDefinition
+-- @tfield ()=>void initialize An optional function which will be called when the system is added to a world.
+-- @tfield ()=>void destroy An optional function which will be called when the system is removed from a world.
+-- @tfield (delta)=>void update A required function that computes updates before frame processing.
+-- @tfield ()=>void process A required function which does per-frame processing.
+ring.SystemDefinition = {}
 
-  for k, v in pairs(system) do
-    inst[k] = v
+--- A system implementation.
+-- @table System
+-- @tfield ()=>void initialize An optional function which will be called when the system is added to a world.
+-- @tfield ()=>void destroy An optional function which will be called when the system is removed from a world.
+-- @tfield (dt)=>void update A required function which performs updates before frame processing.
+-- @tfield ()=>void process A required function which performs per-frame processing.
+ring.System = {}
+
+--- Create a new `ring.System` table.
+-- @function newSystem
+-- @tparam ring.SystemDefinition definition A `ring.SystemDefinition` table.
+-- @treturn ring.System A `ring.System` table.
+ring.newSystem = function(definition)
+  local b = {}
+
+  for k, v in pairs(definition) do b[k] = v end
+
+  b.initialize = definition.initialize or function(self)
   end
 
-  inst.entities = {}
-
-  inst.initialize = function(self)
-    for _, entityId in pairs(self.world.entities) do
-      self.entities[entityId] = self:matchEntity(entityId)
-    end
-  
-    self.world:addListener("componentAdded", self)
-    self.world:addListener("componentRemoved", self)
-    self.world:addListener("entityCreated", self)
-    self.world:addListener("entityDestroyed", self)
-
-    if system.initialize then
-      system.initialize(self)
-    end
+  b.destroy = definition.destroy or function(self)
   end
 
-  inst.destroy = function(self)
-    self.world:removeListener("componentAdded", self)
-    self.world:removeListener("componentRemoved", self)
-    self.world:removeListener("entityAdded", self)
-    self.world:removeListener("entityRemoved", self)
-
-    if system.destroy then
-      system.destroy(self)
-    end
+  b.update = definition.update or function(self, dt)
+    error("SystemDefinition.update must be implemented")
   end
 
-  inst.matchEntity = system.matchEntity or function(self, entityId)
-    error("EntitySystem.matchEntity must be implemented")
+  b.process = definition.process or function(self)
+    error("SystemDefinition.process must be implemented")
   end
 
-  inst.onComponentAdded = function(self, entityId, componentName)
-    self.entities[entityId] = self:matchEntity(entityId) or nil
-  end
-  
-  inst.onComponentRemoved = function(self, entityId, componentName)
-    self.entities[entityId] = self:matchEntity(entityId) or nil
-  end
-  
-  inst.onEntityCreated = function(self, entityId)
-    if self:matchEntity(entityId) then
-      self.entities[entityId] = true
-    end
-  end
-  
-  inst.onEntityDestroyed = function(self, entityId)
-    self.entities[entityId] = nil
-  end
-
-  inst.updateEntity = system.updateEntity or function(self, entityId, dt)
-    error("EntitySystem.updateEntity must be implemented")
-  end
-
-  inst.update = function(self, dt)
-    for entityId, _ in pairs(self.entities) do
-      self:updateEntity(entityId, dt)
-    end
-
-    if system.update then
-      system.update(self, dt)
-    end
-  end
-
-  inst.processEntity = system.processEntity or function(self, entityId)
-    error("EntitySystem.processEntity must be implemented")
-  end
-
-  inst.process = function(self)
-    for entityId, _ in pairs(self.entities) do
-      self:processEntity(entityId)
-    end
-
-    if system.process then
-      system.process(self)
-    end
-  end
-
-  return inst
+  return b
 end
 
--- Create a new world. World represents a context in which a set of entities
+--- A definition of a `EventSystem`.
+-- @table EventSystemDefinition
+-- @tfield {{subject, callback},...} listeners A set of subjects to listen to.
+-- @tfield ()=>void initialize Optional function which will be called when the system is initialized.
+-- @tfield ()=>void destroy Optional function which will be called when the system is destroyed.
+ring.EventSystemDefinition = {}
+
+--- An event system implementation.
+-- EventSystem is a system that is primarily interested in responding to
+-- events that occur on the world to which the system belongs. It accepts a
+-- set of subjects mapped to callback functions, the subjects of which will be
+-- subscribed to automatically during initialization and unsubscribed from
+-- during destruction. The system may implement update and process functions
+-- as well, but these are considered optional.
+ring.EventSystem = {}
+
+--- Create a new `ring.EventSystem` table.
+-- @tparam ring.EventSystemDefinition definition A `ring.EventSystemDefinition` table.
+ring.newEventSystem = function(definition)
+  local b = {}
+
+  b.subscriptions = {}
+
+  for k, v in pairs(definition) do b[k] = v end
+
+  local subscribe = function(self, subject, callback)
+    self.subscriptions[callback] = self.world:subscribe(subject, function(...)
+      callback(self, ...)
+    end)
+  end
+
+  local unsubscribe = function(self, subject, callback)
+    subscriptions[callback] = self.world:unsubscribe(subject,
+                                                     subscriptions[callback])
+  end
+
+  b.initialize = function(self)
+    for subject, callback in pairs(self.listeners) do
+      subscribe(self, subject, callback)
+    end
+
+    if definition.initialize then definition.initialize(self) end
+  end
+
+  b.destroy = function(self)
+    for subject, callback in pairs(self.listeners) do
+      unsubscribe(self, subject, callback)
+    end
+
+    if definition.destroy then definition.destroy(self) end
+  end
+
+  b.update = definition.update or function(self, dt)
+  end
+
+  b.process = definition.process or function(self)
+  end
+
+  return b
+end
+
+--- A definition of a `ring.EntitySystem`.
+-- @table EntitySystemDefinition
+-- @tfield ()=>void initialize An optional function which will be called when the system is added to a world.
+-- @tfield ()=>void destroy An optional function which will be called when the system is removed from a world.
+-- @tfield (entityId)=>void Required function which will be called once per-entity to perform updates before per-frame processing.
+-- @tfield (entityId)=>void Required function which will be called once per-entity to perform per-frame processing.
+ring.EventSystemDefinition = {}
+
+--- An entity system implementation.
+-- An entity system keeps a set of entity IDs and calls its `updateEntity`
+-- and `processEntity` functions iteratively for each entity ID in the set.
+-- Membership in the set is determined by a call to `matchEntity` on the
+-- following events,
+-- (1) `"+#"` aka `entity created`,
+-- (2) `"-#"` aka `entity destroyed`,
+-- (3) `"+@"` aka `component added`,
+-- (4) `"-@"` aka `component removed`.
+-- @table EntitySystem
+-- @tfield ()=>void initialize An optional function which will be called when the system is added to a world.
+-- @tfield ()=>void destroy An optional function which will be called when the system is removed from a world.
+-- @tfield (dt,entityId)=>void updateEntity A required function which performs updates before frame processing on all matching entities.
+-- @tfield ()=>void processEntity A required function which performs per-frame processing on all matching entities.
+ring.EntitySystem = {}
+
+--- Create a new `ring.EntitySystem` table.
+-- @tparam EntitySystemDefinition definition A `ring.EntitySystemDefinition` table.
+-- @treturn EntitySystem A `ring.EntitySystem` table.
+ring.newEntitySystem = function(definition)
+  local b = {}
+
+  for k, v in pairs(definition) do b[k] = v end
+
+  b.entities = {}
+
+  local recomputeMembership = function(self, e)
+    self.entities[e] = self:matchEntity(e) or nil
+  end
+
+  b.initialize = function(self)
+    for _, e in pairs(self.world.entities) do
+      self.entities[e] = self:matchEntity(e)
+    end
+
+    self.world:subscribe("+#", function(e)
+      recomputeMembership(self, e)
+    end)
+
+    self.world:subscribe("-#", function(e)
+      recomputeMembership(self, e)
+    end)
+
+    self.world:subscribe("+@", function(e)
+      recomputeMembership(self, e)
+    end)
+
+    self.world:subscribe("-@", function(e)
+      recomputeMembership(self, e)
+    end)
+
+    if definition.initialize then definition.initialize(self) end
+  end
+
+  b.destroy = function(self)
+    self.world:unsubscribe("+#", self.recomputeMembership)
+    self.world:unsubscribe("-#", self.recomputeMembership)
+    self.world:unsubscribe("+@", self.recomputeMembership)
+    self.world:unsubscribe("-@", self.recomputeMembership)
+
+    if definition.destroy then definition.destroy(self) end
+  end
+
+  b.matchEntity = definition.matchEntity or function(self, e)
+    error("EntitySystemDefinition.matchEntity must be implemented")
+  end
+
+  b.updateEntity = definition.updateEntity or function(self, e, dt)
+    error("EntitySystemDefinition.updateEntity must be implemented")
+  end
+
+  b.update = function(self, dt)
+    for e, _ in pairs(self.entities) do self:updateEntity(e, dt) end
+
+    if definition.update then definition.update(self, dt) end
+  end
+
+  b.processEntity = definition.processEntity or function(self, entityId)
+    error("EntitySystemDefinition.processEntity must be implemented")
+  end
+
+  b.process = function(self)
+    for e, _ in pairs(self.entities) do self:processEntity(e) end
+
+    if definition.process then definition.process(self) end
+  end
+
+  return b
+end
+
+--- A `ring.MessageBus` style subject string.
+ring.SubjectString = {}
+
+--- Split a `ring.SubjectString` into a `ring.SubjectParts` array.
+-- @tparam ring.SubjectString subject The subject to listen to.
+ring.subjectToParts = function(subject)
+  local parts = {}
+
+  local char1 = string.sub(subject, 1, 1)
+
+  -- When referring to a built-in change modifier, allow prefixing
+  -- the modifier, and ring will automatically use it as the leaf
+  -- node.
+  -- For example, '+@component' will become '@component.+'
+  if char1 == "+" or char1 == "-" or char1 == "~" or char1 == "!" then
+    subject = string.sub(subject, 2) .. "." .. char1
+    char1 = string.sub(subject, 1, 1)
+  end
+
+  -- for part, delim in ring.stringSplit(subject, "([^\\.\\@\\#]+)") do
+  for part, delim in ring.stringSplit(subject, "[\\.|(@)|(#)]") do
+    if part ~= "" then table.insert(parts, part) end
+    if delim == "@" or delim == "#" then table.insert(parts, delim) end
+  end
+
+  return parts
+end
+
+local newMessageBusNodeContainer = {}
+
+newMessageBusNodeContainer.newMessageBusNode = function()
+  local b = {}
+
+  b.children = {}
+  b.listeners = {}
+
+  local getOrCreateNodeContainer = {}
+
+  getOrCreateNodeContainer.getOrCreateNode =
+      function(self, name)
+        local node = self.children[name]
+        if not node then
+          node = newMessageBusNodeContainer.newMessageBusNode(self)
+          self.children[name] = node
+        end
+        return node
+      end
+
+  local copyParts = function(self, parts)
+    local copy = {}
+    for i, v in ipairs(parts) do copy[i] = v end
+    return copy
+  end
+
+  local subscribePartsContainer = {}
+
+  subscribePartsContainer.subscribeParts =
+      function(self, parts, callback)
+        if #parts == 0 then
+          self.listeners[callback] = callback
+        else
+          local nextPart = table.remove(parts, 1)
+          local nextNode =
+              getOrCreateNodeContainer.getOrCreateNode(self, nextPart)
+          subscribePartsContainer.subscribeParts(nextNode, parts, callback)
+        end
+        return callback
+      end
+
+  b.subscribeParts = function(self, parts, callback)
+    -- print("SUBSCRIBING TO " .. table.concat(parts, "."))
+    return subscribePartsContainer.subscribeParts(self, copyParts(self, parts),
+                                                  callback)
+  end
+
+  b.subscribe = function(self, subject, callback)
+    return self:subscribeParts(ring.subjectToParts(subject), callback)
+  end
+
+  local unsubscribeParts = function(self, parts, callback)
+    if #parts == 0 then
+      self.listeners[callback] = nil
+    else
+      local nextPart = table.remove(parts, 1)
+      local nextNode = getOrCreateNodeContainer.getOrCreateNode(self, nextPart)
+      return unsubscribeParts(nextNode, parts, callback)
+    end
+    return callback
+  end
+
+  b.unsubscribe = function(self, subject, callback)
+    return unsubscribeParts(self, self:subjectToParts(self, subject), callback)
+  end
+
+  local publishParts = function(self, parts, ...)
+    if #parts == 0 then
+      for listener, _ in pairs(self.listeners) do listener(...) end
+    else
+      local nextPart = table.remove(parts, 1)
+      if #parts == 0 and nextPart ~= "*" then
+        local starNode = getOrCreateNodeContainer.getOrCreateNode(self, "*")
+        self.publishParts(starNode, parts, ...)
+      end
+      local nextNode = getOrCreateNodeContainer.getOrCreateNode(self, nextPart)
+      self.publishParts(nextNode, parts, ...)
+    end
+  end
+
+  b.publishParts = function(self, parts, ...)
+    publishParts(self, copyParts(self, parts), ...)
+  end
+
+  b.publish = function(self, subject, ...)
+    publishParts(self, self:subjectToParts(subject), ...)
+  end
+
+  return b
+end
+
+--- A message bus implementation.
+-- @table MessageBus
+-- @tfield (subject,message)=>void publish
+-- @tfield (subject,callback)=>void subscribe
+ring.MessageBus = {}
+
+--- Create a new `ring.MessageBus` table.
+ring.newMessageBus = function()
+  local b = {}
+
+  b.root = newMessageBusNodeContainer.newMessageBusNode()
+
+  b.subscribe = function(self, subject, callback)
+    return self.root:subscribe(subject, callback)
+  end
+
+  b.subscribeParts = function(self, parts, callback)
+    return self.root:subscribeParts(parts, callback)
+  end
+
+  b.unsubscribe = function(self, subject, callback)
+    return self.root:unsubscribe(subject, callback)
+  end
+
+  b.publishParts = function(self, parts, ...)
+    self.root:publishParts(parts, ...)
+  end
+
+  b.publish = function(self, subject, ...)
+    self.root:publish(subject, ...)
+  end
+
+  return b
+end
+
+--- A world implementation.
+-- World represents a context in which a set of entities
 -- with various compositional components are acted upon by a ordered set of
 -- of systems.
-ring.newWorld = function()
-  local inst = {}
+-- @table World
+-- @tfield (subject,callback)=>void subscribe Subscribe to a `ring.SubjectString`.
+-- @tfield (subject,callback)=>void unsubscribe Unsubscribe from a `ring.SubjectString`.
+-- @tfield (subject,message)=>void publish Publish a message to a `ring.SubjectString`.
+-- @tfield (entityId,componentName,value)=>void putComponent Add a component to an entity. The form of a component is unstructured, but if values are provided, the component will be initialized with those values. Otherwise, the component will be initialized to boolean 'true'. *Aliases: putc,addComponent,addc.*
+-- @tfield (entityId,componentName)=>void deleteComponent Delete a component from an entity. *Aliases: delc,removeComponent,remc.*
+-- @tfield (entityId,componentName,[componentKey])=>void getComponent Get a copy of a component value or a copy of the entire component table. *Aliases: getc.*
+-- @tfield (entityId,componentName)=>boolean hasComponent Check whether a entity has a component.
+-- @tfield ({componentName,defaults},...},[name])=>void createEntity Create an entity.
+-- @tfield (name)=>void getEntity Get an entity by name.
+-- @tfield (entityId)=>void destroyEntity Destroy an entity.
+-- @tfield (system,[name])=>void addSystem Add a system to this world.
+-- @tfield (name)=>void getSystem Get a system from this world.
+-- @tfield (systemOrName)=>void removeSystem Remove a system from this world.
+-- @tfield (dt)=>void update Perform world updates.
+-- @tfield ()=>void process Perform world per-frame processing.
+ring.World = {}
 
-  inst.components = {}
-  inst.entities = {}
-  inst.systems = {}
-  inst.listeners = {
-    componentAdded = {},
-    componentRemoved = {},
-    entityCreated = {},
-    entityDestroyed = {}
+--- Create a new `ring.World` table.
+-- @treturn World A `ring.World` table.
+ring.newWorld = function(isPublish)
+  isPublish = isPublish ~= nil and isPublish or true
+
+  local b = {}
+
+  b.bus = ring.newMessageBus()
+  b.components = {}
+  b.componentMetadata = {}
+  b.entityDefinitions = {}
+  b.entities = {}
+  b.entityMetadata = {}
+  b.nameToEntity = {}
+  b.entityToName = {}
+  b.nameToSystem = {}
+  b.systems = {}
+
+  local componentSubjects = {
+    add = { ring.COMPONENT_PREFIX, ring.ADD_SUFFIX },
+    subtract = { ring.COMPONENT_PREFIX, ring.SUBTRACT_SUFFIX }
   }
 
-  local broadcastComponentAdded = function(self, entityId, componentName)
-    for _, listener in ipairs(self.listeners.componentAdded) do
-      listener:onComponentAdded(entityId, componentName)
+  local entitySubjects = {
+    add = { ring.ENTITY_PREFIX, ring.ADD_SUFFIX },
+    subtract = { ring.ENTITY_PREFIX, ring.SUBTRACT_SUFFIX }
+  }
+
+  -- Metadata
+
+  local makeComponentMetadata = function(self, c)
+    return {
+      subjects = {
+        add = { ring.COMPONENT_PREFIX, c, ring.ADD_SUFFIX },
+        change = { ring.COMPONENT_PREFIX, c, ring.CHANGE_SUFFIX },
+        subtract = { ring.COMPONENT_PREFIX, c, ring.SUBTRACT_SUFFIX }
+      }
+    }
+  end
+
+  local makeEntityMetadata = function(self, e, n)
+    local subjects = {}
+    subjects.add = { ring.ENTITY_PREFIX, e, ring.ADD_SUFFIX }
+    subjects.change = { ring.ENTITY_PREFIX, e, ring.CHANGE_SUFFIX }
+    subjects.subtract = { ring.ENTITY_PREFIX, e, ring.SUBTRACT_SUFFIX }
+    if n then
+      subjects.namedAdd = { ring.ENTITY_PREFIX, n, ring.ADD_SUFFIX }
+      subjects.namedChange = { ring.ENTITY_PREFIX, n, ring.CHANGE_SUFFIX }
+      subjects.namedSubtract = { ring.ENTITY_PREFIX, n, ring.SUBTRACT_SUFFIX }
+    end
+    subjects.components = {}
+    return { subjects = subjects }
+  end
+
+  local makeEntityComponentMetadata = function(self, e, n, c)
+    local subjects = {}
+    subjects.add = {
+      ring.ENTITY_PREFIX, e, ring.COMPONENT_PREFIX, c, ring.ADD_SUFFIX
+    }
+    subjects.change = {
+      ring.ENTITY_PREFIX, e, ring.COMPONENT_PREFIX, c, ring.CHANGE_SUFFIX
+    }
+    subjects.subtract = {
+      ring.ENTITY_PREFIX, e, ring.COMPONENT_PREFIX, c, ring.SUBTRACT_SUFFIX
+    }
+    if n then
+      subjects.namedAdd = {
+        ring.ENTITY_PREFIX, n, ring.COMPONENT_PREFIX, c, ring.ADD_SUFFIX
+      }
+      subjects.namedChange = {
+        ring.ENTITY_PREFIX, n, ring.COMPONENT_PREFIX, c, ring.CHANGE_SUFFIX
+      }
+      subjects.namedSubtract = {
+        ring.ENTITY_PREFIX, n, ring.COMPONENT_PREFIX, c, ring.SUBTRACT_SUFFIX
+      }
+    end
+    return subjects
+  end
+
+  local createComponentMetadata = function(self, c)
+    self.componentMetadata[c] = makeComponentMetadata(self, c)
+  end
+
+  local createEntityMetadata = function(self, e, n)
+    self.entityMetadata[e] = makeEntityMetadata(self, e, n)
+  end
+
+  local destroyEntityMetadata = function(self, e)
+    self.entityMetadata[e] = nil
+  end
+
+  local createEntityComponentMetadata = function(self, e, n, c)
+    self.entityMetadata[e].subjects.components[c] =
+        makeEntityComponentMetadata(self, e, n, c)
+  end
+
+  local destroyEntityComponentMetadata =
+      function(self, e, c)
+        self.entityMetadata[e].subjects.components[c] = nil
+      end
+
+  -- Component Helpers
+
+  local createComponent = function(self, c)
+    local component = {}
+    self.components[c] = component
+    createComponentMetadata(self, c)
+    return component
+  end
+
+  local deleteComponent = function(self, c)
+    self.components[c] = nil
+    self.componentMetadata[c] = nil
+  end
+
+  local getOrCreateComponent = function(self, c)
+    local component = self.components[c]
+    if not component then return createComponent(self, c) end
+    return component
+  end
+
+  -- Entity Helpers
+
+  local entityId = function(self, e)
+    return type(e) == "number" and e or self.nameToEntity[e]
+  end
+
+  local entityName = function(self, e)
+    return type(e) == "string" and e or self.entityToName[e] or e
+  end
+
+  -- Message Bus
+
+  b.subscribe = function(self, subject, callback)
+    return self.bus:subscribeParts(self:subjectToParts(subject), callback)
+  end
+
+  b.unsubscribe = function(self, subject, callback)
+    return self.bus:unsubscribe(subject, callback)
+  end
+
+  local unprotectedPublishParts = function(self, parts, ...)
+    return self.bus:publishParts(parts, ...)
+  end
+
+  local unprotectedPublish = function(self, subject, ...)
+    return self.bus:publish(subject, ...)
+  end
+
+  b.subjectToParts = function(self, subject)
+    local parts = ring.subjectToParts(subject)
+
+    -- If the subject refers to an entity by name, then replace the name
+    -- with the entity's ID.
+    -- if #parts > 1 and parts[1] == "#" and string.match(parts[2], "%w+") then
+    --   local n = self.nameToEntity[parts[2]]
+    --   if n then
+    --     parts[2] = n
+    --   end
+    -- end
+
+    return parts
+  end
+
+  b.publishParts = function(self, parts, ...)
+    return self.bus:publishParts(parts, ...)
+  end
+
+  b.publish = function(self, subject, ...)
+    self:publishParts(self:subjectToParts(subject), ...)
+  end
+
+  -- Add Component
+
+  local publishComponentAdd = function(self, e, c, t)
+    unprotectedPublishParts(self, entitySubjects.add, e)
+    unprotectedPublishParts(self, self.componentMetadata[c].subjects.add, e, t)
+
+    -- local entitySubjects = self.entityMetadata[e].subjects
+    -- unprotectedPublishParts(self, entitySubjects.change, c, t)
+    -- if entitySubjects.namedChange then
+    --   unprotectedPublishParts(self, entitySubjects.namedChange, c, t)
+    -- end
+
+    -- local entityComponentSubjects = entitySubjects.components[c]
+    -- unprotectedPublishParts(self, entityComponentSubjects.add, t)
+    -- if entityComponentSubjects.namedAdd then
+    --   unprotectedPublishParts(self, entityComponentSubjects.namedAdd, t)
+    -- end
+  end
+
+  local addComponentPure = function(self, e, c, t)
+    t = t or {}
+
+    local component = getOrCreateComponent(self, c)
+    if component[e] then
+      error("World.addComponent cannot be called for existing component: " .. c)
+    end
+
+    component[e] = t
+    createEntityComponentMetadata(self, e, self:getEntityName(e), c)
+    return t
+  end
+
+  local addComponent = function(self, e, c, t)
+    local r = addComponentPure(self, e, c, t)
+    publishComponentAdd(self, e, c, t)
+    return r
+  end
+
+  b.addComponent = isPublish and addComponent or addComponentPure
+
+  -- Set Component
+
+  local publishComponentSet = function(self, e, c, t, value)
+    unprotectedPublishParts(self, self.componentMetadata[c].subjects.change, e,
+                            t)
+
+    local entitySubjects = self.entityMetadata[e].subjects
+    unprotectedPublishParts(self, entitySubjects.change, t)
+    if entitySubjects.namedChange then
+      unprotectedPublishParts(self, entitySubjects.namedChange, t)
+    end
+
+    local entityComponentSubjects = entitySubjects.components[c]
+
+    unprotectedPublishParts(self, entityComponentSubjects.change, t)
+    if entityComponentSubjects.namedChange then
+      unprotectedPublishParts(self, entityComponentSubjects.namedChange, t)
     end
   end
 
-  local broadcastComponentRemoved = function(self, entityId, componentName)
-    for _, listener in ipairs(self.listeners.componentAdded) do
-      listener:onComponentRemoved(entityId, componentName)
+  local setComponentPure = function(self, e, c, t, value)
+    local component = getOrCreateComponent(self, c)
+    local entityComponent = component[e]
+
+    if not entityComponent then
+      error(
+          "World.setComponent cannot be called for non-existing component '" ..
+              c .. "' of #" .. entityName(self, e))
+    end
+
+    if type(t) == "table" then
+      for k, v in pairs(t) do entityComponent[k] = v end
+      return entityComponent
+    else
+      entityComponent[t] = value
+      return value
     end
   end
 
-  -- Add a component to an entity. The form of a component is unstructured,
-  -- but if defaults are provided, the component will be initialized with
-  -- those values. Otherwise, the component will be initialized to boolean
-  -- 'true'.
-  -- @param entityId The entityId of the entity to add the component to.
-  -- @param componentName The name of the component.
-  -- @param defaults Optional table of values to initialize the component with.
-  inst.addComponent = function(self, entityId, componentName, defaults)
-    local component = self.components[componentName]
+  local setComponent = function(self, e, c, t, value)
+    setComponentPure(self, e, c, t, value)
+    publishComponentSet(self, e, c, t, value)
+  end
+
+  b.setComponent = isPublish and setComponent or setComponentPure
+
+  -- Get Component
+
+  b.getComponent = function(self, e, c, k)
+    local component = getOrCreateComponent(self, c)
+    local entityComponent = component[e]
+
+    if not entityComponent then return nil end
+
+    local value = k ~= nil and entityComponent[k] or entityComponent
+
+    return value
+  end
+
+  b.hasComponent = function(self, e, c)
+    local component = self.components[c]
+    return component and component[e] ~= nil
+  end
+
+  -- Remove Component
+
+  local publishComponentRemove = function(self, e, c)
+    unprotectedPublishParts(self, self.componentMetadata[c].subjects.subtract, e)
+
+    local entitySubjects = self.entityMetadata[e].subjects
+
+    unprotectedPublishParts(self, entitySubjects.subtract, c)
+    if entitySubjects.namedSubtract then
+      unprotectedPublishParts(self, entitySubjects.namedSubtract, c)
+    end
+
+    local entityComponentSubjects = entitySubjects.components[c]
+    -- unprotectedPublishParts(self, entityComponentSubjects.subtract);
+    -- if entityComponentSubjects.namedSubtract then
+    --   unprotectedPublishParts(self, entityComponentSubjects.namedSubtract);
+    -- end
+  end
+
+  local removeComponentPure = function(self, e, c)
+    local component = self.components[c]
     if not component then
-      component = {}
-      self.components[componentName] = component
+      error("Cannot remove non-existing component '" .. c .. "' of #" .. e)
     end
-    component[entityId] = defaults or true
-    broadcastComponentAdded(self, entityId, componentName)
+
+    component[e] = nil
+    destroyEntityComponentMetadata(self, e, c)
+    return component
   end
 
-  -- Remove a component from an entity.
-  -- @param entityId The entityId of the entity to remove the component from.
-  -- @param componentName The name of the component to remove.
-  inst.removeComponent = function(self, entityId, componentName)
-    local component = self.components[componentName]
-    if not component then
-      return
-    end
-    component[entityId] = nil
-    broadcastComponentRemoved(self, entityId, componentName)
+  local removeComponent = function(self, e, c)
+    -- publishComponentRemove(self, e, c)
+    return removeComponentPure(self, e, c)
   end
 
-  -- Get a component from an entity.
-  -- @param entityId The entityId of the entity to get the component of.
-  -- @param componentName The name of the component to get.
-  inst.getComponent = function(self, entityId, componentName)
-    local component = self.components[componentName]
-    if component then
-      return component[entityId]
-    end
-    return nil
-  end
+  b.removeComponent = isPublish and removeComponent or removeComponentPure
 
-  -- Check whether an entity has a component.
-  -- @param entityId The entityId of the entity to check the component of.
-  -- @param componentName The name of the component to check.
-  -- @return Boolean truth as to whether the entity has the component.
-  inst.hasComponent = function(self, entityId, componentName)
-    local component = self.components[componentName]
-    return component ~= nil and component[entityId] ~= nil
-  end
+  -- Create Entity
 
   local entityIdCounter = 0
 
@@ -277,97 +726,117 @@ ring.newWorld = function()
     return entityIdCounter
   end
 
-  local broadcastEntityCreated = function(world, entityId)
-    for _, listener in ipairs(world.listeners.entityCreated) do
-      listener:onEntityCreated(entityId)
-    end
+  local setEntityName = function(self, e, n)
+    self.nameToEntity[n] = e
+    self.entityToName[e] = n
   end
 
-  local broadcastEntityDestroyed = function(world, entityId)
-    for _, listener in ipairs(world.listeners.entityDestroyed) do
-      listener:onEntityDestroyed(entityId)
-    end
+  local clearEntityName = function(self, e, n)
+    self.nameToEntity[n] = nil
+    self.entityToName[e] = nil
   end
 
-  -- Create a new entity in this world. Broadcasts the event "entityCreated" on creation.
-  -- @param components An optional table of format { componentName1 = defaults1, componentName2 = defaults2... } where defaults is an optional table of properties to initialize the component with.
-  inst.createEntity = function(self, components)
-    local entityId = nextEntityId()
-    self.entities[entityId] = true
+  local publishEntityCreate = function(self, e)
+    unprotectedPublishParts(self, entitySubjects.add, e)
+    -- local entitySubjects = self.entityMetadata[e].subjects
+    -- unprotectedPublishParts(self, entitySubjects.add)
+    -- if entitySubjects.namedAdd then
+    --   unprotectedPublishParts(self, entitySubjects.namedAdd)
+    -- end
+  end
+
+  local createEntityPure = function(self, componentsOrName, components)
+    if type(componentsOrName) == "table" then components = componentsOrName end
+
+    local e = nextEntityId()
+    self.entities[e] = true
+
+    local n = nil
+    if type(componentsOrName) == "string" then
+      n = componentsOrName
+      setEntityName(self, e, n)
+    end
+
+    createEntityMetadata(self, e, n)
+
     if components ~= nil then
-      for componentName, defaults in pairs(components) do
-        local component = self.components[componentName]
-        if component == nil then
-          component = {}
-          self.components[componentName] = component
-        end
-        component[entityId] = defaults
-      end
+      for c, t in pairs(components) do self:addComponent(e, c, t) end
     end
-    broadcastEntityCreated(self, entityId)
-    return entityId
+
+    return e
   end
 
-  -- Destroy an entity in this world. Broadcasts the event "entityDestroyed" on destruction.
-  -- @param entityId The entityId of the entity to destroy.
-  inst.destroyEntity = function(self, entityId)
-    self.entities[entityId] = nil
-    broadcastEntityDestroyed(entityId)
+  local createEntity = function(self, componentsOrName, components)
+    local e = createEntityPure(self, componentsOrName, components)
+    publishEntityCreate(self, e)
+    return e
   end
 
-  -- Add a system to this world.
-  -- @param system The system to add to this world. Create a system using ring.new*System() functions.
-  inst.addSystem = function(self, system)
+  b.createEntity = isPublish and createEntityPure or createEntity
+
+  -- Get Entity
+
+  b.getEntity = function(self, name)
+    return self.nameToEntity[name]
+  end
+
+  b.getEntityName = function(self, e)
+    return self.entityToName[e]
+  end
+
+  -- Destroy Entity
+
+  local publishEntityDestroy = function(self, e)
+    local entitySubjects = self.entityMetadata[e].subjects
+    unprotectedPublishParts(self, entitySubjects.subtract)
+    if entitySubjects.namedSubtract then
+      unprotectedPublishParts(self, entitySubjects.namedSubtract)
+    end
+  end
+
+  local destroyEntityPure = function(self, e)
+    self.entities[e] = nil
+    removeEntityMetadata(self, e)
+  end
+
+  local destroyEntity = function(self, e)
+    destroyEntityPure(self, e)
+    publishEntityDestroy(self, e)
+  end
+
+  b.destroyEntity = isPublish and destroyEntity or destroyEntityPure
+
+  -- Add System
+
+  b.addSystem = function(self, systemOrName, system)
+    if type(systemOrName) == "table" then
+      system = systemOrName
+    else
+      self.nameToSystem[systemOrName] = system
+    end
+
     system.world = self
+
     table.insert(self.systems, system)
+
     system:initialize()
   end
 
-  -- Remove a system from this world. Removes by reference check, so you must
-  -- have a reference to the system if you want to remove it.
-  -- @param system The system to remove from this world.
-  inst.removeSystem = function(self, system)
-    for i, s in ipairs(self.systems) do
-      if s == system then
-        table.remove(self.systems, i)
-        system:destroy()
-        return
-      end
-    end
+  local findIndexOfSystem = function(self, system)
+    for i, s in ipairs(self.systems) do if s == system then return i, s end end
+    return -1, system
   end
 
-  -- Get a system from this world. Finds by reference check, so you must
-  -- have a reference to the system if you want to get it.
-  -- @param system The system instance
-  inst.getSystem = function(self, system)
-    for _, s in ipairs(self.systems) do
-      if s == system then
-        return s
-      end
-    end
-    return nil
+  b.removeSystem = function(self, systemOrName)
+    local i, system = type(systemOrName) == "table" and
+                          findIndexOfSystem(self, systemOrName) or
+                          findIndexOfSystem(self, nameToSystem[systemOrName])
+    table.remove(self.systems, i)
+    system:destroy()
   end
 
-  -- Add a listener on this world. A listener may listen to the following events:
-  -- - componentAdded, with callback of form onComponentAdded(entityId, componentName) => void, which is called when a component is added to an entity.
-  -- - componentRemoved, with callback of form (entityId, componentName) => void, which is called when a component is removed from an entity.
-  -- - entityAdded, with callback of form (entityId) => void, which is called when an entity is added to this world.
-  -- - entityRemoved, with callback of form (entityId) => void, which is called when an entity is removed from this world.
-  -- @param eventName The name of the event to listen to.
-  -- @param listener A reference to a table that defines a callback function of the respective event.
-  inst.addListener = function(self, eventName, listener)
-    table.insert(self.listeners[eventName], listener)
-  end
-
-  -- Remove a listener from this world.
-  -- @param listener A reference to the callback from that is called when the event is broadcast.
-  inst.removeListener = function(eventName, listener)
-    for i, l in ipairs(self.listeners[eventName]) do
-      if l == listener then
-        table.remove(i)
-        return
-      end
-    end
+  b.getSystem = function(self, name)
+    return self.nameToSystem[name]
   end
 
   -- Performs updates on data prior to frame processing. This function calls
@@ -376,22 +845,18 @@ ring.newWorld = function()
   -- this function will be invoked before the world process method, once per
   -- tick, every tick.
   -- @param dt Delta time elapsed since the last tick, as a floating point number.
-  inst.update = function(self, dt)
-    for _, system in ipairs(self.systems) do
-      system:update(dt)
-    end
+  b.update = function(self, dt)
+    for _, system in ipairs(self.systems) do system:update(dt) end
   end
 
   -- Performs frame processing. This is where all draw operations should occur,
   -- and it is assumed that all changes to data that occur this tick should
   -- have already been taken care of by calling World:update(dt).
-  inst.process = function(self)
-    for _, system in ipairs(self.systems) do
-      system:process()
-    end
+  b.process = function(self)
+    for _, system in ipairs(self.systems) do system:process() end
   end
 
-  return inst
+  return b
 end
 
 return ring
